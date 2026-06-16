@@ -17,7 +17,7 @@ def test_agent_creation():
 def test_agent_run():
     agent = DummyAgent(role="test", system_prompt="You are test")
     ctx = DataContext()
-    result = asyncio.get_event_loop().run_until_complete(agent.run("do something", ctx))
+    result = asyncio.run(agent.run("do something", ctx))
     assert result.success is True
     assert result.output == "done"
 

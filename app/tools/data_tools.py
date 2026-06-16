@@ -1,10 +1,79 @@
 import io
+import ipaddress
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
+
 import pandas as pd
 
 
-def read_file(path: str) -> pd.DataFrame:
-    p = Path(path)
+def _is_within_path(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_allowed_path(path: str, allowed_root: str = "data") -> Path:
+    root = Path(allowed_root).resolve()
+    raw_path = Path(path)
+    candidate = raw_path.resolve() if raw_path.is_absolute() else (Path.cwd() / raw_path).resolve()
+    if not _is_within_path(candidate, root) and not raw_path.is_absolute():
+        candidate = (root / raw_path).resolve()
+    if not _is_within_path(candidate, root):
+        raise PermissionError(f"File access is restricted to '{root}'")
+    return candidate
+
+
+def _validate_read_query(query: str) -> None:
+    normalized = query.strip().lower()
+    if not normalized.startswith(("select", "with")):
+        raise PermissionError("Only read-only SELECT queries are allowed")
+    if ";" in normalized.rstrip(";"):
+        raise PermissionError("Multiple SQL statements are not allowed")
+
+
+def _host_is_private(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        addresses = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        addresses = []
+        for info in infos:
+            try:
+                addresses.append(ipaddress.ip_address(info[4][0]))
+            except ValueError:
+                continue
+
+    return any(
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        for address in addresses
+    )
+
+
+def _validate_api_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise PermissionError("Only HTTP and HTTPS URLs are allowed")
+    if not parsed.hostname:
+        raise PermissionError("API URL must include a host")
+    if _host_is_private(parsed.hostname):
+        raise PermissionError("Local and private network API targets are not allowed")
+
+
+def read_file(path: str, allowed_root: str = "data") -> pd.DataFrame:
+    p = _resolve_allowed_path(path, allowed_root=allowed_root)
     suffix = p.suffix.lower()
     if suffix == ".csv":
         return pd.read_csv(p)
@@ -20,17 +89,21 @@ def read_file(path: str) -> pd.DataFrame:
 
 def read_sql(connection_string: str, query: str) -> pd.DataFrame:
     from sqlalchemy import create_engine
+
+    _validate_read_query(query)
     engine = create_engine(connection_string)
     return pd.read_sql(query, engine)
 
 
 def call_api(url: str, method: str = "GET", headers: dict = None, body: dict = None) -> pd.DataFrame:
     import httpx
-    client = httpx.Client(timeout=30)
-    if method.upper() == "GET":
-        resp = client.get(url, headers=headers)
-    else:
-        resp = client.post(url, headers=headers, json=body)
+
+    _validate_api_url(url)
+    with httpx.Client(timeout=30) as client:
+        if method.upper() == "GET":
+            resp = client.get(url, headers=headers)
+        else:
+            resp = client.post(url, headers=headers, json=body)
     resp.raise_for_status()
     data = resp.json()
     if isinstance(data, list):

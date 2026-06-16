@@ -17,6 +17,7 @@ from app.agents.data_engineer import DataEngineerAgent
 from app.agents.analyst import AnalystAgent
 from app.agents.visualizer import VisualizerAgent
 from app.agents.reporter import ReporterAgent
+from app.agents.reviewer import ReviewerAgent
 
 
 st.set_page_config(page_title="DataAgent", page_icon="📊", layout="wide")
@@ -33,6 +34,7 @@ def init_system():
     orchestrator.register_agent(AnalystAgent(llm_client=llm, sandbox_timeout=settings.sandbox_timeout_sec))
     orchestrator.register_agent(VisualizerAgent(llm_client=llm, chart_output_dir=settings.chart_output_dir))
     orchestrator.register_agent(ReporterAgent(llm_client=llm))
+    orchestrator.register_agent(ReviewerAgent(llm_client=llm))
     return coordinator, orchestrator
 
 
@@ -58,7 +60,7 @@ with st.sidebar:
                 df = pd.read_parquet(uploaded_file)
 
             name = uploaded_file.name.rsplit(".", 1)[0]
-            st.session_state.context.add_dataframe(name, df)
+            st.session_state.context.add_dataframe(name, df, auto_profile=True)
             st.success(f"已加载 {uploaded_file.name} ({len(df)} 行)")
         except Exception as e:
             st.error(f"加载失败：{e}")
@@ -72,7 +74,7 @@ with st.sidebar:
     st.header("📜 历史记录")
     if st.button("查看历史"):
         from app.history import HistoryManager
-        history = HistoryManager()
+        history = HistoryManager(db_path=get_settings().history_db_path)
         sessions = history.get_sessions(limit=10)
         for session in sessions:
             with st.expander(f"{session['created_at']} - {session['status']}"):
@@ -110,6 +112,23 @@ if prompt := st.chat_input("描述你的数据分析需求..."):
                 if report:
                     st.markdown(report)
 
+                review = result.get("review", "")
+                if review:
+                    with st.expander("Review"):
+                        st.markdown(review)
+
+                artifacts = result.get("artifacts", [])
+                if artifacts:
+                    with st.expander("Artifacts"):
+                        for artifact in artifacts:
+                            st.write(f"**{artifact['kind']} - {artifact['title']}**")
+                            st.write(artifact["summary"])
+
+                errors = result.get("errors", {})
+                if result.get("status") == "failed" and errors:
+                    error_summary = "\n".join(f"- {agent}: {error}" for agent, error in errors.items() if error)
+                    st.error(f"Analysis failed:\n{error_summary}")
+
                 charts = result.get("charts", [])
                 for chart_path in charts:
                     if os.path.exists(chart_path):
@@ -120,7 +139,7 @@ if prompt := st.chat_input("描述你的数据分析需求..."):
                         for agent, output in result["agent_results"].items():
                             st.write(f"**{agent}**: {output}")
 
-                response = report or "分析完成，请查看上方结果。"
+                response = report or (f"Analysis failed:\n{error_summary}" if result.get("status") == "failed" and errors else "Analysis completed.")
                 st.session_state.messages.append({"role": "assistant", "content": response})
 
             except Exception as e:

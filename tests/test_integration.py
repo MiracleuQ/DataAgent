@@ -40,18 +40,9 @@ def test_sandbox_blocks_dangerous_code():
 
 
 def test_sandbox_timeout():
-    from unittest.mock import patch, MagicMock
     sandbox = Sandbox(timeout=1)
-    with patch("app.core.sandbox.ThreadPoolExecutor") as mock_exec:
-        mock_future = MagicMock()
-        mock_future.result.side_effect = TimeoutError()
-        mock_executor = MagicMock()
-        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
-        mock_executor.__exit__ = MagicMock(return_value=False)
-        mock_executor.submit.return_value = mock_future
-        mock_exec.return_value = mock_executor
-        result = sandbox.execute("while True: pass")
-        assert "timed out" in result["error"]
+    result = sandbox.execute("while True: pass")
+    assert "timed out" in result["error"]
 
 
 def test_history_full_flow():
