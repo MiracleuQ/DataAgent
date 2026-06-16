@@ -1,4 +1,5 @@
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -17,9 +18,11 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
         logger.addHandler(console_handler)
         log_dir = Path("logs")
         log_dir.mkdir(exist_ok=True)
-        file_handler = logging.FileHandler(
+        file_handler = logging.handlers.RotatingFileHandler(
             log_dir / f"app_{datetime.now():%Y%m%d}.log",
-            encoding="utf-8"
+            maxBytes=10 * 1024 * 1024,
+            backupCount=7,
+            encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)

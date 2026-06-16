@@ -1,29 +1,22 @@
 import json
 import logging
 import re
-import traceback
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from app.agents.base import AgentResult, BaseAgent
+from app.agents.tool_loop import _clean_content
+from app.core.bus import MessageBus
 from app.core.context import DataContext
 from app.llm.client import LLMClient
+from app.utils.language import get_prompt
 
 logger = logging.getLogger(__name__)
 ALLOWED_AGENTS = {"data_engineer", "analyst", "visualizer", "reporter"}
 
-SYSTEM_PROMPT = """你是数据分析团队的协调者。你的职责是：
-1. 理解用户需求
-2. 拆解为子任务
-3. 分配给合适的 Agent
-
-可用 Agent：data_engineer(数据加载清洗), analyst(统计分析), visualizer(图表生成), reporter(报告撰写)
-
-只输出 JSON：{"understanding": "理解", "tasks": [{"agent": "xxx", "task": "描述", "depends_on": []}]}"""
-
 
 class CoordinatorAgent(BaseAgent):
-    def __init__(self, llm_client: LLMClient):
-        super().__init__(role="coordinator", system_prompt=SYSTEM_PROMPT)
+    def __init__(self, llm_client: LLMClient, bus: Optional[MessageBus] = None):
+        super().__init__(role="coordinator", system_prompt=get_prompt("coordinator"), bus=bus)
         self._llm = llm_client
 
     def _default_plan(self, user_request: str) -> Dict:
@@ -93,9 +86,9 @@ class CoordinatorAgent(BaseAgent):
         return self._default_plan(user_request)
 
     async def plan(self, user_request: str) -> Dict:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user_request}]
+        messages = [{"role": "system", "content": get_prompt("coordinator")}, {"role": "user", "content": user_request}]
         response = await self._llm.chat(messages=messages, temperature=0.0)
-        content = response.content or "{}"
+        content = _clean_content(response.content or "{}")
         return self._parse_json_response(content, user_request)
 
     async def run(self, task: str, context: DataContext) -> AgentResult:
@@ -105,4 +98,5 @@ class CoordinatorAgent(BaseAgent):
             self._remember(task, summary)
             return AgentResult(success=True, output=summary, agent_id=self.role, data={"plan": plan})
         except Exception as e:
-            return AgentResult(success=False, output="", agent_id=self.role, error=f"{e}\n{traceback.format_exc()}")
+            logger.error("CoordinatorAgent failed: %s", e, exc_info=True)
+            return AgentResult(success=False, output="", agent_id=self.role, error=str(e))

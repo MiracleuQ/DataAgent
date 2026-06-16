@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 
 
 def _is_within_path(path: Path, root: Path) -> bool:
@@ -91,8 +92,12 @@ def read_sql(connection_string: str, query: str) -> pd.DataFrame:
     from sqlalchemy import create_engine
 
     _validate_read_query(query)
+    if not connection_string.startswith("sqlite:///"):
+        raise PermissionError("Only SQLite connections are allowed")
     engine = create_engine(connection_string)
-    return pd.read_sql(query, engine)
+    with engine.connect() as conn:
+        result = pd.read_sql(query, conn)
+    return result
 
 
 def call_api(url: str, method: str = "GET", headers: dict = None, body: dict = None) -> pd.DataFrame:
@@ -123,7 +128,7 @@ def clean_data(df: pd.DataFrame, drop_duplicates: bool = True, fill_na: str = "m
         result = result.drop_duplicates()
     for col in result.columns:
         if result[col].isna().any():
-            if fill_na == "median" and result[col].dtype in ["int64", "float64"]:
+            if fill_na == "median" and is_numeric_dtype(result[col]):
                 result[col] = result[col].fillna(result[col].median())
             elif fill_na == "mode":
                 result[col] = result[col].fillna(result[col].mode().iloc[0] if not result[col].mode().empty else "unknown")
@@ -134,10 +139,12 @@ def clean_data(df: pd.DataFrame, drop_duplicates: bool = True, fill_na: str = "m
 
 def get_data_tools():
     from app.tools.registry import Tool
+    from app.tools.export_tools import export_data
     return [
         Tool(name="read_file", description="Read a data file (CSV, Excel, JSON, Parquet)", parameters={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}, function=read_file),
         Tool(name="read_sql", description="Execute SQL query", parameters={"type": "object", "properties": {"connection_string": {"type": "string"}, "query": {"type": "string"}}, "required": ["connection_string", "query"]}, function=read_sql),
         Tool(name="call_api", description="Call REST API", parameters={"type": "object", "properties": {"url": {"type": "string"}, "method": {"type": "string", "default": "GET"}}, "required": ["url"]}, function=call_api),
         Tool(name="parse_text", description="Parse pasted text data", parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}, function=parse_text),
         Tool(name="clean_data", description="Clean DataFrame", parameters={"type": "object", "properties": {"drop_duplicates": {"type": "boolean", "default": True}, "fill_na": {"type": "string", "enum": ["median", "mode", "zero"], "default": "median"}}}, function=clean_data),
+        Tool(name="export_data", description="Export data to file (excel/csv/json/markdown/parquet)", parameters={"type": "object", "properties": {"format_type": {"type": "string", "enum": ["excel", "csv", "json", "markdown", "parquet"]}, "output_path": {"type": "string"}}, "required": ["format_type", "output_path"]}, function=export_data),
     ]

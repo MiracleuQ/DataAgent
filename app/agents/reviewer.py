@@ -1,20 +1,24 @@
-import traceback
+import logging
+from typing import Optional
 
 from app.agents.base import AgentResult, BaseAgent
+from app.agents.tool_loop import run_tool_call_loop, _clean_content
+from app.core.bus import MessageBus
 from app.core.context import DataContext
 from app.llm.client import LLMClient
+from app.tools.analysis_tools import get_analysis_tools
+from app.tools.registry import ToolRegistry
+from app.utils.language import get_prompt
 
-SYSTEM_PROMPT = """你是数据分析审阅 Agent。你的职责是：
-1. 检查报告中的结论是否有数据或 artifact 支撑
-2. 指出缺失值、异常值、样本量、相关性等可能影响结论的风险
-3. 给出简洁的审阅结论和改进建议
-
-不要编造数据。只能基于上下文中已有的数据摘要、分析结果和 artifacts 审阅。"""
+logger = logging.getLogger(__name__)
 
 
 class ReviewerAgent(BaseAgent):
-    def __init__(self, llm_client: LLMClient):
-        super().__init__(role="reviewer", system_prompt=SYSTEM_PROMPT)
+    def __init__(self, llm_client: LLMClient, bus: Optional[MessageBus] = None):
+        registry = ToolRegistry()
+        for tool in get_analysis_tools():
+            registry.register(tool)
+        super().__init__(role="reviewer", system_prompt=get_prompt("reviewer"), tools=registry, bus=bus)
         self._llm = llm_client
 
     async def run(self, task: str, context: DataContext) -> AgentResult:
@@ -28,10 +32,29 @@ class ReviewerAgent(BaseAgent):
                 f"Artifacts:\n{context.artifact_summary()}"
             )
             messages = self._build_messages(review_task)
-            response = await self._llm.chat(messages=messages, temperature=0.1)
-            output = response.content or "Review could not be generated."
+            openai_tools = self.tools.to_openai_tools()
+
+            def execute_tool(func_name, args):
+                df_name = args.pop("df_name", None) or (context.list_dataframes()[0] if context.list_dataframes() else None)
+                if not df_name:
+                    raise ValueError("No dataframe available for review verification")
+                df = context.get_dataframe(df_name)
+                if df is None:
+                    raise ValueError(f"DataFrame '{df_name}' not found")
+                result = self.tools.call(func_name, df=df, **args)
+                stored = result if not hasattr(result, "to_dict") else result.to_dict()
+                return stored
+
+            response, _tool_summaries = await run_tool_call_loop(
+                self._llm,
+                messages,
+                openai_tools,
+                execute_tool,
+            )
+            output = _clean_content(response.content) or "Review could not be generated."
             context.add_result("review_report", output)
             self._remember(task, output)
             return AgentResult(success=True, output=output, agent_id=self.role)
         except Exception as e:
-            return AgentResult(success=False, output="", agent_id=self.role, error=f"{e}\n{traceback.format_exc()}")
+            logger.error("ReviewerAgent failed: %s", e, exc_info=True)
+            return AgentResult(success=False, output="", agent_id=self.role, error=str(e))

@@ -9,33 +9,23 @@ import streamlit as st
 import pandas as pd
 
 from app.config import get_settings
-from app.llm.client import LLMClient
 from app.core.context import DataContext
-from app.core.orchestrator import Orchestrator
-from app.agents.coordinator import CoordinatorAgent
-from app.agents.data_engineer import DataEngineerAgent
-from app.agents.analyst import AnalystAgent
-from app.agents.visualizer import VisualizerAgent
-from app.agents.reporter import ReporterAgent
-from app.agents.reviewer import ReviewerAgent
+from app.factory import create_system
+from frontend.i18n import FrontendLanguage, get_i18n, set_language, t
 
 
 st.set_page_config(page_title="DataAgent", page_icon="📊", layout="wide")
-st.title("📊 DataAgent — 多 Agent 数据分析系统")
+
+if "language" not in st.session_state:
+    st.session_state.language = FrontendLanguage.CHINESE
+set_language(st.session_state.language)
+
+st.title(t("app_title"))
 
 
 @st.cache_resource
 def init_system():
-    settings = get_settings()
-    llm = LLMClient(settings=settings)
-    coordinator = CoordinatorAgent(llm_client=llm)
-    orchestrator = Orchestrator()
-    orchestrator.register_agent(DataEngineerAgent(llm_client=llm))
-    orchestrator.register_agent(AnalystAgent(llm_client=llm, sandbox_timeout=settings.sandbox_timeout_sec))
-    orchestrator.register_agent(VisualizerAgent(llm_client=llm, chart_output_dir=settings.chart_output_dir))
-    orchestrator.register_agent(ReporterAgent(llm_client=llm))
-    orchestrator.register_agent(ReviewerAgent(llm_client=llm))
-    return coordinator, orchestrator
+    return create_system()
 
 
 if "messages" not in st.session_state:
@@ -45,8 +35,21 @@ if "context" not in st.session_state:
 
 
 with st.sidebar:
-    st.header("⚙️ 设置")
-    uploaded_file = st.file_uploader("上传数据文件", type=["csv", "xlsx", "json", "parquet"])
+    st.header(t("settings"))
+
+    lang_col1, lang_col2 = st.columns(2)
+    with lang_col1:
+        if st.button("中文", use_container_width=True):
+            st.session_state.language = FrontendLanguage.CHINESE
+            set_language(FrontendLanguage.CHINESE)
+            st.rerun()
+    with lang_col2:
+        if st.button("English", use_container_width=True):
+            st.session_state.language = FrontendLanguage.ENGLISH
+            set_language(FrontendLanguage.ENGLISH)
+            st.rerun()
+
+    uploaded_file = st.file_uploader(t("upload_file"), type=["csv", "xlsx", "json", "parquet"])
 
     if uploaded_file:
         try:
@@ -61,28 +64,28 @@ with st.sidebar:
 
             name = uploaded_file.name.rsplit(".", 1)[0]
             st.session_state.context.add_dataframe(name, df, auto_profile=True)
-            st.success(f"已加载 {uploaded_file.name} ({len(df)} 行)")
+            st.success(t("upload_success", filename=uploaded_file.name, rows=len(df)))
         except Exception as e:
-            st.error(f"加载失败：{e}")
+            st.error(t("upload_error", error=str(e)))
 
     if st.session_state.context.list_dataframes():
-        st.header("📊 数据集")
+        st.header(t("datasets"))
         for name in st.session_state.context.list_dataframes():
             df = st.session_state.context.get_dataframe(name)
-            st.write(f"**{name}**: {len(df)} 行 × {len(df.columns)} 列")
+            st.write(t("dataset_info", name=name, rows=len(df), columns=len(df.columns)))
 
-    st.header("📜 历史记录")
-    if st.button("查看历史"):
+    st.header(t("history"))
+    if st.button(t("view_history")):
         from app.history import HistoryManager
         history = HistoryManager(db_path=get_settings().history_db_path)
         sessions = history.get_sessions(limit=10)
         for session in sessions:
             with st.expander(f"{session['created_at']} - {session['status']}"):
-                st.write(f"**请求**: {session['user_request']}")
+                st.write(f"**Request**: {session['user_request']}")
                 if session['result']:
-                    st.write(f"**结果**: {session['result'][:200]}...")
+                    st.write(f"**Result**: {session['result'][:200]}...")
 
-    if st.button("🗑️ 清空对话"):
+    if st.button(t("clear_chat")):
         st.session_state.messages = []
         st.session_state.context = DataContext()
         st.rerun()
@@ -93,20 +96,37 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 
-if prompt := st.chat_input("描述你的数据分析需求..."):
+if prompt := st.chat_input(t("chat_placeholder")):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Agent 团队正在协作分析..."):
+        with st.spinner(t("analyzing")):
             try:
                 coordinator, orchestrator = init_system()
-                result = asyncio.run(orchestrator.run(
-                    user_request=prompt,
-                    context=st.session_state.context,
-                    coordinator=coordinator,
-                ))
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        result = pool.submit(
+                            asyncio.run,
+                            orchestrator.run(
+                                user_request=prompt,
+                                context=st.session_state.context,
+                                coordinator=coordinator,
+                            ),
+                        ).result()
+                else:
+                    result = asyncio.run(orchestrator.run(
+                        user_request=prompt,
+                        context=st.session_state.context,
+                        coordinator=coordinator,
+                    ))
 
                 report = result.get("report", "")
                 if report:
@@ -114,12 +134,12 @@ if prompt := st.chat_input("描述你的数据分析需求..."):
 
                 review = result.get("review", "")
                 if review:
-                    with st.expander("Review"):
+                    with st.expander(t("review")):
                         st.markdown(review)
 
                 artifacts = result.get("artifacts", [])
                 if artifacts:
-                    with st.expander("Artifacts"):
+                    with st.expander(t("artifacts")):
                         for artifact in artifacts:
                             st.write(f"**{artifact['kind']} - {artifact['title']}**")
                             st.write(artifact["summary"])
@@ -127,7 +147,7 @@ if prompt := st.chat_input("描述你的数据分析需求..."):
                 errors = result.get("errors", {})
                 if result.get("status") == "failed" and errors:
                     error_summary = "\n".join(f"- {agent}: {error}" for agent, error in errors.items() if error)
-                    st.error(f"Analysis failed:\n{error_summary}")
+                    st.error(t("analysis_failed", errors=error_summary))
 
                 charts = result.get("charts", [])
                 for chart_path in charts:
@@ -135,14 +155,14 @@ if prompt := st.chat_input("描述你的数据分析需求..."):
                         st.image(chart_path)
 
                 if result.get("agent_results"):
-                    with st.expander("🔍 Agent 执行详情"):
+                    with st.expander(t("agent_details")):
                         for agent, output in result["agent_results"].items():
                             st.write(f"**{agent}**: {output}")
 
-                response = report or (f"Analysis failed:\n{error_summary}" if result.get("status") == "failed" and errors else "Analysis completed.")
+                response = report or (t("analysis_failed", errors=error_summary) if result.get("status") == "failed" and errors else t("analysis_completed"))
                 st.session_state.messages.append({"role": "assistant", "content": response})
 
             except Exception as e:
-                error_msg = f"执行出错：{e}"
+                error_msg = t("error_occurred", error=str(e))
                 st.error(error_msg)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})

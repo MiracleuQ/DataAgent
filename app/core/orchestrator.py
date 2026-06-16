@@ -4,6 +4,7 @@ import uuid
 from typing import Dict, List, Optional, Tuple
 
 from app.agents.base import AgentResult, BaseAgent
+from app.agents.tool_loop import _clean_content
 from app.config import get_settings
 from app.core.bus import Message, MessageBus
 from app.core.context import DataContext
@@ -17,6 +18,10 @@ class Orchestrator:
         self._bus = MessageBus()
         self._history = HistoryManager(db_path=history_db_path or settings.history_db_path)
         self._execution_events: List[Dict] = []
+
+    @property
+    def bus(self) -> MessageBus:
+        return self._bus
 
     @property
     def execution_events(self) -> List[Dict]:
@@ -129,11 +134,9 @@ class Orchestrator:
 
         full_task = f"{task_desc}{dep_context}"
         self._record_event(idx, agent_name, "running", "", duration_ms=0)
-        start = time.perf_counter()
-        result = await agent.run(full_task, context)
-        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        result = await agent.run_with_timeout(full_task, context)
         status = "success" if result.success else "failed"
-        self._record_event(idx, agent_name, status, result.error or "", duration_ms=duration_ms)
+        self._record_event(idx, agent_name, status, result.error or "", duration_ms=result.duration_ms)
         await self._bus.send(
             Message(
                 sender=agent_name,
@@ -170,7 +173,8 @@ class Orchestrator:
     async def run(self, user_request: str, context: DataContext, coordinator: "BaseAgent") -> Dict:
         from app.agents.coordinator import CoordinatorAgent
 
-        assert isinstance(coordinator, CoordinatorAgent)
+        if not isinstance(coordinator, CoordinatorAgent):
+            raise TypeError(f"Expected CoordinatorAgent, got {type(coordinator).__name__}")
         session_id = str(uuid.uuid4())
         self._history.create_session(session_id, user_request)
         run_started = time.perf_counter()
@@ -182,7 +186,7 @@ class Orchestrator:
             if final_report and reviewer:
                 review_result = await reviewer.run("Review the final report against the available data and artifacts.", context)
                 results["reviewer_auto"] = review_result
-            agent_outputs = {k: v.output[:200] for k, v in results.items() if v.success}
+            agent_outputs = {k: _clean_content(v.output)[:200] for k, v in results.items() if v.success}
             failures = {k: v.error for k, v in results.items() if not v.success}
 
             for key, result in results.items():

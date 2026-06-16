@@ -1,5 +1,13 @@
 from functools import lru_cache
+from pathlib import Path
+from typing import List, Optional
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class Settings(BaseSettings):
@@ -17,7 +25,74 @@ class Settings(BaseSettings):
     chart_output_dir: str = "data/charts"
     sandbox_timeout_sec: int = 30
 
+    @field_validator("llm_api_key")
+    @classmethod
+    def validate_llm_api_key(cls, v: str) -> str:
+        if not v:
+            logger.warning("LLM_API_KEY is not set. LLM calls will fail.")
+        return v
+
+    @field_validator("llm_timeout_sec")
+    @classmethod
+    def validate_timeout(cls, v: int) -> int:
+        if v < 10:
+            logger.warning("llm_timeout_sec is very low, may cause frequent timeouts")
+        return v
+
+    @field_validator("sandbox_timeout_sec")
+    @classmethod
+    def validate_sandbox_timeout(cls, v: int) -> int:
+        if v < 5:
+            logger.warning("sandbox_timeout_sec is very low")
+        return v
+
+    def validate_startup(self) -> List[str]:
+        warnings = []
+        errors = []
+
+        if not self.llm_api_key:
+            errors.append("LLM_API_KEY is required but not set")
+
+        if self.app_env == "production":
+            if self.llm_api_key == "EMPTY_KEY":
+                errors.append("Production environment requires valid LLM_API_KEY")
+            if self.sandbox_timeout_sec > 60:
+                warnings.append("sandbox_timeout_sec is high for production")
+
+        data_dir = Path("data")
+        if not data_dir.exists():
+            data_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Created data directory")
+
+        charts_dir = Path(self.chart_output_dir)
+        if not charts_dir.exists():
+            charts_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("Created charts directory: %s", charts_dir)
+
+        for w in warnings:
+            logger.warning(w)
+        for e in errors:
+            logger.error(e)
+
+        return errors
+
+
+_settings: Optional[Settings] = None
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
+
+
+def validate_settings() -> bool:
+    settings = get_settings()
+    errors = settings.validate_startup()
+    if errors:
+        logger.error("Configuration validation failed with %d errors", len(errors))
+        return False
+    logger.info("Configuration validation passed")
+    return True

@@ -1,3 +1,4 @@
+import threading
 from typing import Any, Dict, List, Optional
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
@@ -9,7 +10,23 @@ logger = setup_logger(__name__)
 
 
 class DataContext:
+    """
+    Shared data context for agent collaboration.
+
+    Threading model:
+    - Uses ``threading.Lock`` to serialize mutations to shared state
+      (dataframes, analysis_results, charts, artifacts).
+    - All lock-held operations are O(1) dict/list mutations (microseconds),
+      so the lock never blocks the asyncio event loop for a meaningful duration.
+    - ``add_dataframe(auto_profile=True)`` generates EDA reports OUTSIDE the
+      lock and then calls ``add_artifact`` (which acquires the lock only for a
+      brief list append). This keeps the lock scope minimal.
+    - In CPython, dict assignments and list appends are GIL-atomic, so
+      ``threading.Lock`` is safe even when called from async code.
+    """
+
     def __init__(self):
+        self._lock = threading.Lock()
         self.dataframes: Dict[str, pd.DataFrame] = {}
         self.analysis_results: Dict[str, Any] = {}
         self.charts: List[str] = []
@@ -18,7 +35,8 @@ class DataContext:
         logger.info("DataContext initialized")
 
     def add_dataframe(self, name: str, df: pd.DataFrame, auto_profile: bool = False) -> None:
-        self.dataframes[name] = df
+        with self._lock:
+            self.dataframes[name] = df
         logger.info(f"DataFrame '{name}' added: {len(df)} rows, {len(df.columns)} columns")
         if auto_profile:
             report = generate_eda_report(name, df)
@@ -42,7 +60,8 @@ class DataContext:
         return list(self.dataframes.keys())
 
     def add_result(self, key: str, value: Any) -> None:
-        self.analysis_results[key] = value
+        with self._lock:
+            self.analysis_results[key] = value
         logger.info(f"Analysis result added: {key}")
 
     def get_result(self, key: str) -> Any:
@@ -52,11 +71,13 @@ class DataContext:
         return result
 
     def add_chart(self, path: str) -> None:
-        self.charts.append(path)
+        with self._lock:
+            self.charts.append(path)
         logger.info(f"Chart added: {path}")
 
     def add_artifact(self, artifact: Artifact) -> Artifact:
-        self.artifacts.append(artifact)
+        with self._lock:
+            self.artifacts.append(artifact)
         logger.info(f"Artifact added: {artifact.kind} - {artifact.title}")
         return artifact
 

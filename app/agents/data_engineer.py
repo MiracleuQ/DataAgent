@@ -1,32 +1,48 @@
-import traceback
+import logging
+import os
+from pathlib import Path
+from typing import Optional
 
 from app.agents.base import AgentResult, BaseAgent
-from app.agents.tool_loop import run_tool_call_loop
+from app.agents.tool_loop import run_tool_call_loop, _clean_content
+from app.core.bus import MessageBus
 from app.core.context import DataContext
 from app.llm.client import LLMClient
 from app.tools.data_tools import get_data_tools
 from app.tools.registry import ToolRegistry
+from app.utils.language import get_prompt
 
-SYSTEM_PROMPT = """你是数据工程师 Agent。你的职责是：
-1. 根据用户描述选择合适的数据源加载数据
-2. 对数据进行清洗
-3. 将处理好的数据存入共享上下文
+logger = logging.getLogger(__name__)
 
-可用工具：read_file, read_sql, call_api, parse_text, clean_data
-只输出数据概览结果。"""
+DATA_DIR = Path("data")
+READABLE_SUFFIXES = {".csv", ".xlsx", ".xls", ".json", ".parquet"}
+
+
+def _list_data_files() -> str:
+    if not DATA_DIR.exists():
+        return "No local data files found."
+    files = [
+        f.name for f in DATA_DIR.iterdir()
+        if f.is_file() and f.suffix.lower() in READABLE_SUFFIXES
+    ]
+    if not files:
+        return "No readable data files in data/ directory."
+    return "Available data files: " + ", ".join(sorted(files))
 
 
 class DataEngineerAgent(BaseAgent):
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, bus: Optional[MessageBus] = None):
         registry = ToolRegistry()
         for tool in get_data_tools():
             registry.register(tool)
-        super().__init__(role="data_engineer", system_prompt=SYSTEM_PROMPT, tools=registry)
+        super().__init__(role="data_engineer", system_prompt=get_prompt("data_engineer"), tools=registry, bus=bus)
         self._llm = llm_client
 
     async def run(self, task: str, context: DataContext) -> AgentResult:
         try:
-            messages = self._build_messages(task)
+            file_hint = _list_data_files()
+            augmented_task = f"{task}\n\n[Data directory contents]\n{file_hint}"
+            messages = self._build_messages(augmented_task)
             openai_tools = self.tools.to_openai_tools()
 
             def execute_tool(func_name, args):
@@ -54,8 +70,9 @@ class DataEngineerAgent(BaseAgent):
                 openai_tools,
                 execute_tool,
             )
-            output = response.content or "\n".join(tool_summaries) or context.summary()
+            output = _clean_content(response.content) or "\n".join(tool_summaries) or context.summary()
             self._remember(task, output)
             return AgentResult(success=True, output=output, agent_id=self.role)
         except Exception as e:
-            return AgentResult(success=False, output="", agent_id=self.role, error=f"{e}\n{traceback.format_exc()}")
+            logger.error("DataEngineerAgent failed: %s", e, exc_info=True)
+            return AgentResult(success=False, output="", agent_id=self.role, error=str(e))
