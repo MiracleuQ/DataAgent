@@ -1,10 +1,7 @@
 import asyncio
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Tuple
-
-_tool_executor = ThreadPoolExecutor(max_workers=8)
 
 _STRIP_XML_RE = re.compile(r"<\s*/?\s*function_?calls\s*>", re.IGNORECASE)
 _STRIP_XML_RE2 = re.compile(r"<\s*invoke\s[^>]*>.*?</\s*invoke\s*>", re.DOTALL | re.IGNORECASE)
@@ -46,24 +43,6 @@ def _execute_single_tool(tool_call: Any, execute_tool: Callable[[str, Dict[str, 
     content = _tool_content(result)
     tool_call_id = getattr(tool_call, "id", "")
     return name, content, tool_call_id
-
-
-async def _execute_tools_parallel(
-    tool_calls: List[Any],
-    execute_tool: Callable[[str, Dict[str, Any]], Any],
-) -> List[Tuple[str, str, str]]:
-    loop = asyncio.get_event_loop()
-    futures = [
-        loop.run_in_executor(_tool_executor, _execute_single_tool, tc, execute_tool)
-        for tc in tool_calls
-    ]
-    results = await asyncio.gather(*futures)
-    return results
-
-
-def _is_read_only_tool(name: str) -> bool:
-    read_only_tools = {"describe_data", "correlation", "read_file"}
-    return name in read_only_tools
 
 
 def _clean_content(text: str) -> str:
@@ -125,7 +104,6 @@ async def run_tool_call_loop(
     tools: List[Dict[str, Any]],
     execute_tool: Callable[[str, Dict[str, Any]], Any],
     temperature: float = 0.2,
-    parallel: bool = True,
 ) -> Tuple[Any, List[str]]:
     response = await llm.chat(messages=messages, tools=tools, temperature=temperature)
     tool_calls = getattr(response, "tool_calls", None)

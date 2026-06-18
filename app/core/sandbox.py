@@ -35,6 +35,9 @@ _IMPORT_CALL_RE = re.compile(
     r"__import__\s*\(['\"]([^'\"]+)['\"]", re.MULTILINE
 )
 
+_cached_pd = None
+_cached_np = None
+
 
 def _make_safe_import():
     builtin_import = __import__
@@ -49,12 +52,16 @@ def _make_safe_import():
 
 
 def _build_safe_globals():
+    global _cached_pd, _cached_np
+    if _cached_pd is None:
+        _cached_pd = __import__("pandas")
+        _cached_np = __import__("numpy")
     safe_builtins = types.SimpleNamespace()
     _real_builtins = __builtins__ if isinstance(__builtins__, dict) else __builtins__.__dict__
     for name in ALLOWED_BUILTINS:
         setattr(safe_builtins, name, _real_builtins.get(name))
     safe_builtins.__import__ = _make_safe_import()
-    return {"__builtins__": safe_builtins, "pd": __import__("pandas"), "np": __import__("numpy")}
+    return {"__builtins__": safe_builtins, "pd": _cached_pd, "np": _cached_np}
 
 
 class Sandbox:

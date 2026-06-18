@@ -5,6 +5,7 @@ from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
 from app.core.artifacts import Artifact
 from app.core.eda import generate_eda_report
 from app.utils.logger import setup_logger
+from app.utils.serialization import json_safe_value
 
 logger = setup_logger(__name__)
 
@@ -32,11 +33,15 @@ class DataContext:
         self.charts: List[str] = []
         self.artifacts: List[Artifact] = []
         self.metadata: Dict[str, Any] = {}
+        self._profile_cache: Dict[str, Dict[str, Any]] = {}
+        self._summary_cache: Optional[str] = None
         logger.info("DataContext initialized")
 
     def add_dataframe(self, name: str, df: pd.DataFrame, auto_profile: bool = False) -> None:
         with self._lock:
             self.dataframes[name] = df
+            self._profile_cache.pop(name, None)
+            self._summary_cache = None
         logger.info(f"DataFrame '{name}' added: {len(df)} rows, {len(df.columns)} columns")
         if auto_profile:
             report = generate_eda_report(name, df)
@@ -51,13 +56,15 @@ class DataContext:
             )
 
     def get_dataframe(self, name: str) -> Optional[pd.DataFrame]:
-        df = self.dataframes.get(name)
+        with self._lock:
+            df = self.dataframes.get(name)
         if df is None:
             logger.warning(f"DataFrame '{name}' not found")
         return df
 
     def list_dataframes(self) -> List[str]:
-        return list(self.dataframes.keys())
+        with self._lock:
+            return list(self.dataframes.keys())
 
     def add_result(self, key: str, value: Any) -> None:
         with self._lock:
@@ -65,7 +72,8 @@ class DataContext:
         logger.info(f"Analysis result added: {key}")
 
     def get_result(self, key: str) -> Any:
-        result = self.analysis_results.get(key)
+        with self._lock:
+            result = self.analysis_results.get(key)
         if result is None:
             logger.warning(f"Analysis result '{key}' not found")
         return result
@@ -87,18 +95,17 @@ class DataContext:
         return "\n".join(f"{artifact.kind}: {artifact.title} - {artifact.summary}" for artifact in self.artifacts)
 
     def _json_safe_value(self, value: Any) -> Any:
-        if pd.isna(value):
-            return None
-        if hasattr(value, "isoformat"):
-            return value.isoformat()
-        if hasattr(value, "item"):
-            return value.item()
-        return value
+        return json_safe_value(value)
 
     def data_profile(self, name: str, sample_size: int = 3, top_n: int = 5) -> Dict[str, Any]:
         df = self.get_dataframe(name)
         if df is None:
             raise KeyError(f"DataFrame '{name}' not found")
+
+        fingerprint = (len(df), len(df.columns))
+        cached = self._profile_cache.get(name)
+        if cached and cached.get("_fingerprint") == fingerprint:
+            return cached
 
         columns: Dict[str, Dict[str, Any]] = {}
         row_count = len(df)
@@ -130,16 +137,24 @@ class DataContext:
             {str(key): self._json_safe_value(value) for key, value in row.items()}
             for row in df.head(sample_size).to_dict(orient="records")
         ]
-        return {
+        result = {
             "name": name,
             "shape": {"rows": row_count, "columns": len(df.columns)},
             "columns": columns,
             "sample_rows": sample_rows,
+            "_fingerprint": fingerprint,
         }
+        self._profile_cache[name] = result
+        return result
 
     def summary(self) -> str:
+        with self._lock:
+            if self._summary_cache is not None:
+                return self._summary_cache
+            snapshot = (dict(self.dataframes), dict(self.analysis_results), list(self.charts), list(self.artifacts))
+        dataframes, analysis_results, charts, artifacts = snapshot
         parts = []
-        for name, df in self.dataframes.items():
+        for name, df in dataframes.items():
             profile = self.data_profile(name)
             column_bits = []
             for col, info in profile["columns"].items():
@@ -153,10 +168,13 @@ class DataContext:
                 f"DataFrame '{name}': {len(df)} rows, {len(df.columns)} columns; "
                 f"columns: {', '.join(column_bits)}; sample: {profile['sample_rows']}"
             )
-        for key in self.analysis_results:
+        for key in analysis_results:
             parts.append(f"Analysis result: {key}")
-        if self.charts:
-            parts.append(f"Charts: {len(self.charts)} generated")
-        if self.artifacts:
-            parts.append(f"Artifacts: {len(self.artifacts)} available")
-        return "\n".join(parts) if parts else "Empty context"
+        if charts:
+            parts.append(f"Charts: {len(charts)} generated")
+        if artifacts:
+            parts.append(f"Artifacts: {len(artifacts)} available")
+        result = "\n".join(parts) if parts else "Empty context"
+        with self._lock:
+            self._summary_cache = result
+        return result

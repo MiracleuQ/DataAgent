@@ -73,12 +73,18 @@ class CoordinatorAgent(BaseAgent):
             visit(idx)
 
     def _parse_json_response(self, content: str, user_request: str) -> Dict:
-        try:
+        content = content.strip()
+        json_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", content)
+        if json_match:
+            content = json_match.group(1)
+        else:
             json_match = re.search(r"\{[\s\S]*\}", content)
             if json_match:
-                plan = json.loads(json_match.group())
-                self._validate_plan(plan)
-                return plan
+                content = json_match.group()
+        try:
+            plan = json.loads(content)
+            self._validate_plan(plan)
+            return plan
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning("Plan parse/validation failed: %s", e)
 
@@ -87,16 +93,12 @@ class CoordinatorAgent(BaseAgent):
 
     async def plan(self, user_request: str) -> Dict:
         messages = [{"role": "system", "content": get_prompt("coordinator")}, {"role": "user", "content": user_request}]
-        response = await self._llm.chat(messages=messages, temperature=0.0)
+        response = await self._llm.chat(messages=messages, temperature=0.0, response_format={"type": "json_object"})
         content = _clean_content(response.content or "{}")
         return self._parse_json_response(content, user_request)
 
     async def run(self, task: str, context: DataContext) -> AgentResult:
-        try:
-            plan = await self.plan(task)
-            summary = f"理解：{plan.get('understanding', '')}\n计划 {len(plan.get('tasks', []))} 个子任务"
-            self._remember(task, summary)
-            return AgentResult(success=True, output=summary, agent_id=self.role, data={"plan": plan})
-        except Exception as e:
-            logger.error("CoordinatorAgent failed: %s", e, exc_info=True)
-            return AgentResult(success=False, output="", agent_id=self.role, error=str(e))
+        plan = await self.plan(task)
+        plan_json = json.dumps(plan, ensure_ascii=False)
+        self._remember(task, plan_json)
+        return AgentResult(success=True, output=plan_json, agent_id=self.role, data={"plan": plan})

@@ -24,7 +24,7 @@ class LLMResponseCache:
         }
         if kwargs.get("tools"):
             cacheable["tools"] = kwargs["tools"]
-        return hashlib.md5(json.dumps(cacheable, default=str).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(cacheable, default=str).encode()).hexdigest()
 
     def get(self, kwargs: Dict[str, Any]) -> Optional[Any]:
         import time
@@ -94,6 +94,7 @@ class LLMClient:
         temperature: float = 0.2,
         model: Optional[str] = None,
         tools: Optional[List[Dict]] = None,
+        response_format: Optional[Dict[str, str]] = None,
     ) -> Any:
         kwargs: Dict[str, Any] = {
             "model": model or self._model,
@@ -103,6 +104,8 @@ class LLMClient:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+        if response_format:
+            kwargs["response_format"] = response_format
 
         if self._cache and temperature == 0.0:
             cached = self._cache.get(kwargs)

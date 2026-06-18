@@ -16,11 +16,12 @@ class Metric:
 
 
 class MetricsCollector:
-    def __init__(self):
+    def __init__(self, max_histogram_values: int = 1000):
         self._lock = threading.Lock()
         self._counters: Dict[str, float] = {}
         self._gauges: Dict[str, float] = {}
         self._histograms: Dict[str, List[float]] = {}
+        self._max_histogram_values = max_histogram_values
         self._labels: Dict[str, Dict[str, str]] = {}
         self._start_time = time.time()
 
@@ -42,6 +43,8 @@ class MetricsCollector:
             if key not in self._histograms:
                 self._histograms[key] = []
             self._histograms[key].append(value)
+            if len(self._histograms[key]) > self._max_histogram_values:
+                self._histograms[key] = self._histograms[key][-self._max_histogram_values:]
             self._labels[key] = labels or {}
 
     def _make_key(self, name: str, labels: Optional[Dict[str, str]]) -> str:

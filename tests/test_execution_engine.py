@@ -21,7 +21,7 @@ class SlowAgent(BaseAgent):
 
 
 class PlanLLM:
-    async def chat(self, messages, temperature=0.2, model=None, tools=None):
+    async def chat(self, messages, temperature=0.2, model=None, tools=None, response_format=None):
         return SimpleNamespace(
             content='{"understanding": "parallel", "tasks": ['
             '{"agent": "analyst", "task": "a", "depends_on": []},'

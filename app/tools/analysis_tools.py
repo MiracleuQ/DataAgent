@@ -28,9 +28,10 @@ def detect_anomaly(df: pd.DataFrame, column: str, method: str = "iqr") -> pd.Dat
         return df[mask]
     elif method == "zscore":
         from scipy import stats
-        z = np.abs(stats.zscore(df[column].dropna()))
-        mask = z > 3
-        return df[column].dropna()[mask]
+        clean = df[column].dropna()
+        z = np.abs(stats.zscore(clean))
+        anomaly_mask = z > 3
+        return df.loc[clean.index[anomaly_mask]]
     return pd.DataFrame()
 
 

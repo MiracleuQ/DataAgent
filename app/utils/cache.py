@@ -1,7 +1,5 @@
 import hashlib
-import json
 import time
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -90,16 +88,6 @@ class DataCache:
 
 def hash_pandas_dataframe(df: pd.DataFrame) -> str:
     return hashlib.md5(pd.util.hash_pandas_object(df).values.tobytes()).hexdigest()
-
-
-def cached_read_file(path: str, allowed_root: str = "data") -> pd.DataFrame:
-    from app.tools.data_tools import read_file
-    return read_file(path, allowed_root)
-
-
-def cached_call_api(url: str, method: str = "GET", headers: dict = None, body: dict = None) -> pd.DataFrame:
-    from app.tools.data_tools import call_api
-    return call_api(url, method, headers, body)
 
 
 _global_cache: Optional[DataCache] = None

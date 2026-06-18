@@ -1,8 +1,7 @@
 import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
 
 from app.core.context import DataContext
 from app.api.routes import get_system
@@ -41,7 +40,14 @@ async def websocket_analyze(websocket: WebSocket, client_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            request = json.loads(data)
+            try:
+                request = json.loads(data)
+            except json.JSONDecodeError as e:
+                await manager.send_message(client_id, {
+                    "type": "error",
+                    "message": f"Invalid JSON: {e}",
+                })
+                continue
             query = request.get("query", "")
 
             await manager.send_message(client_id, {

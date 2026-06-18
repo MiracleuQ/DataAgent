@@ -3,13 +3,24 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from app.core.context import DataContext
 from app.core.bus import MessageBus, Message
 from app.tools.registry import ToolRegistry
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+
+def resolve_dataframe(context: DataContext, args: Dict[str, Any], purpose: str = "operation") -> "pd.DataFrame":
+    import pandas as pd
+    df_name = args.pop("df_name", None) or (context.list_dataframes()[0] if context.list_dataframes() else None)
+    if not df_name:
+        raise ValueError(f"No dataframe is available for {purpose}")
+    df = context.get_dataframe(df_name)
+    if df is None:
+        raise ValueError(f"DataFrame '{df_name}' not found")
+    return df
 
 
 class AgentStatus(str, Enum):
@@ -63,6 +74,17 @@ class BaseAgent(ABC):
         if len(self._history) > 20:
             self._history = self._history[-20:]
             logger.info(f"Agent '{self.role}' history trimmed to last 20 messages")
+
+    def _make_execute_tool(self, context: DataContext, purpose: str = "operation") -> Callable[[str, Dict[str, Any]], Any]:
+        def execute_tool(func_name: str, args: Dict[str, Any]) -> Any:
+            df_name = args.get("df_name") or (context.list_dataframes()[0] if context.list_dataframes() else None)
+            df = resolve_dataframe(context, args, purpose)
+            result = self.tools.call(func_name, df=df, **args)
+            stored = result if not hasattr(result, "to_dict") else result.to_dict()
+            if df_name:
+                context.add_result(f"{func_name}_{df_name}", stored)
+            return stored
+        return execute_tool
 
     async def send_message(self, receiver: str, content: str, msg_type: str = "info", metadata: Dict[str, Any] = None) -> None:
         if self._bus:

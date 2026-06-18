@@ -95,9 +95,12 @@ def read_sql(connection_string: str, query: str) -> pd.DataFrame:
     if not connection_string.startswith("sqlite:///"):
         raise PermissionError("Only SQLite connections are allowed")
     engine = create_engine(connection_string)
-    with engine.connect() as conn:
-        result = pd.read_sql(query, conn)
-    return result
+    try:
+        with engine.connect() as conn:
+            result = pd.read_sql(query, conn)
+        return result
+    finally:
+        engine.dispose()
 
 
 def call_api(url: str, method: str = "GET", headers: dict = None, body: dict = None) -> pd.DataFrame:

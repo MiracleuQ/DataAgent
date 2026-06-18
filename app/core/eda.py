@@ -2,16 +2,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
-
-
-def _json_safe(value: Any) -> Any:
-    if pd.isna(value):
-        return None
-    if hasattr(value, "item"):
-        return value.item()
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return value
+from app.utils.serialization import json_safe_value
 
 
 def _missing_findings(df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -51,9 +42,9 @@ def _outlier_findings(df: pd.DataFrame) -> List[Dict[str, Any]]:
                     "type": "potential_outliers",
                     "column": str(col),
                     "count": int(len(outliers)),
-                    "lower_bound": _json_safe(lower),
-                    "upper_bound": _json_safe(upper),
-                    "examples": [_json_safe(v) for v in outliers.head(5).tolist()],
+                    "lower_bound": json_safe_value(lower),
+                    "upper_bound": json_safe_value(upper),
+                    "examples": [json_safe_value(v) for v in outliers.head(5).tolist()],
                 }
             )
     return findings

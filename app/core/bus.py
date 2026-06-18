@@ -18,10 +18,11 @@ class Message:
 
 
 class MessageBus:
-    def __init__(self):
+    def __init__(self, max_history: int = 1000):
         self._inboxes: Dict[str, List[Message]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._history: List[Message] = []
+        self._max_history = max_history
         self._handlers: Dict[str, List[Callable]] = defaultdict(list)
         self._subscriptions: Dict[str, List[str]] = defaultdict(list)
 
@@ -29,6 +30,8 @@ class MessageBus:
         async with self._lock:
             self._inboxes[message.receiver].append(message)
             self._history.append(message)
+            if len(self._history) > self._max_history:
+                self._history = self._history[-self._max_history:]
             logger.debug("Message sent: %s -> %s [%s]", message.sender, message.receiver, message.msg_type)
 
         handlers = self._handlers.get(message.receiver, [])
@@ -45,14 +48,14 @@ class MessageBus:
             return messages
 
     async def receive_with_timeout(self, agent_id: str, timeout: float = 1.0) -> List[Message]:
-        deadline = asyncio.get_event_loop().time() + timeout
+        deadline = asyncio.get_running_loop().time() + timeout
         while True:
             async with self._lock:
                 if self._inboxes[agent_id]:
                     messages = self._inboxes.pop(agent_id, [])
                     logger.debug("Messages received by %s: %d", agent_id, len(messages))
                     return messages
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return []
             await asyncio.sleep(min(0.05, remaining))

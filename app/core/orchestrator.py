@@ -130,7 +130,9 @@ class Orchestrator:
         for dep_idx in task_def.get("depends_on", []):
             dep_key = f"{tasks[dep_idx]['agent']}_{dep_idx}"
             if dep_key in existing_results and existing_results[dep_key].success:
-                dep_context += f"\nPrevious task result: {existing_results[dep_key].output[:500]}"
+                dep_agent = tasks[dep_idx]['agent']
+                context.add_result(f"dep_{dep_agent}_{dep_idx}", existing_results[dep_key].output)
+                dep_context += f"\nDependency '{dep_agent}' completed successfully."
 
         full_task = f"{task_desc}{dep_context}"
         self._record_event(idx, agent_name, "running", "", duration_ms=0)

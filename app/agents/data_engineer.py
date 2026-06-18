@@ -1,10 +1,9 @@
 import logging
-import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from app.agents.base import AgentResult, BaseAgent
-from app.agents.tool_loop import run_tool_call_loop, _clean_content
+from app.agents.base import AgentResult, BaseAgent, resolve_dataframe
+from app.agents.tool_loop import run_tool_call_loop
 from app.core.bus import MessageBus
 from app.core.context import DataContext
 from app.llm.client import LLMClient
@@ -38,41 +37,34 @@ class DataEngineerAgent(BaseAgent):
         super().__init__(role="data_engineer", system_prompt=get_prompt("data_engineer"), tools=registry, bus=bus)
         self._llm = llm_client
 
+    def _make_execute_tool(self, context: DataContext, purpose: str = "data loading"):
+        def execute_tool(func_name: str, args: Dict[str, Any]) -> Any:
+            if func_name == "clean_data":
+                df_name = args.get("df_name") or (context.list_dataframes()[0] if context.list_dataframes() else None)
+                df = resolve_dataframe(context, args, "cleaning")
+                cleaned = self.tools.call(func_name, df=df, **args)
+                context.add_dataframe(df_name, cleaned)
+                return context.data_profile(df_name)
+
+            result = self.tools.call(func_name, **args)
+            if hasattr(result, "to_csv"):
+                name = args.get("path", "data").split("/")[-1].split(".")[0]
+                context.add_dataframe(name, result)
+                return context.data_profile(name)
+            return result
+
+        return execute_tool
+
     async def run(self, task: str, context: DataContext) -> AgentResult:
-        try:
-            file_hint = _list_data_files()
-            augmented_task = f"{task}\n\n[Data directory contents]\n{file_hint}"
-            messages = self._build_messages(augmented_task)
-            openai_tools = self.tools.to_openai_tools()
+        file_hint = _list_data_files()
+        augmented_task = f"{task}\n\n[Data directory contents]\n{file_hint}"
+        messages = self._build_messages(augmented_task)
+        openai_tools = self.tools.to_openai_tools()
+        execute_tool = self._make_execute_tool(context)
 
-            def execute_tool(func_name, args):
-                if func_name == "clean_data":
-                    df_name = args.pop("df_name", None) or (context.list_dataframes()[0] if context.list_dataframes() else None)
-                    if not df_name:
-                        raise ValueError("No dataframe is available to clean")
-                    df = context.get_dataframe(df_name)
-                    if df is None:
-                        raise ValueError(f"DataFrame '{df_name}' not found")
-                    cleaned = self.tools.call(func_name, df=df, **args)
-                    context.add_dataframe(df_name, cleaned)
-                    return context.data_profile(df_name)
-
-                result = self.tools.call(func_name, **args)
-                if hasattr(result, "to_csv"):
-                    name = args.get("path", "data").split("/")[-1].split(".")[0]
-                    context.add_dataframe(name, result)
-                    return context.data_profile(name)
-                return result
-
-            response, tool_summaries = await run_tool_call_loop(
-                self._llm,
-                messages,
-                openai_tools,
-                execute_tool,
-            )
-            output = _clean_content(response.content) or "\n".join(tool_summaries) or context.summary()
-            self._remember(task, output)
-            return AgentResult(success=True, output=output, agent_id=self.role)
-        except Exception as e:
-            logger.error("DataEngineerAgent failed: %s", e, exc_info=True)
-            return AgentResult(success=False, output="", agent_id=self.role, error=str(e))
+        response, tool_summaries = await run_tool_call_loop(
+            self._llm, messages, openai_tools, execute_tool,
+        )
+        output = response.content or "\n".join(tool_summaries) or context.summary()
+        self._remember(task, output)
+        return AgentResult(success=True, output=output, agent_id=self.role)

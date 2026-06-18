@@ -31,9 +31,11 @@ class DataUploadResponse(BaseModel):
     name: str
     rows: int
     columns: int
+    context_id: str
 
 
 _system_cache = None
+_context_store: Dict[str, DataContext] = {}
 
 
 def get_system():
@@ -47,7 +49,9 @@ def get_system():
 async def analyze(request: AnalysisRequest):
     try:
         coordinator, orchestrator = get_system()
-        context = DataContext()
+        context = _context_store.get(request.data_context_id) if request.data_context_id else DataContext()
+        if context is None:
+            context = DataContext()
         result = await orchestrator.run(
             user_request=request.query,
             context=context,
@@ -69,9 +73,11 @@ async def analyze(request: AnalysisRequest):
 @router.post("/upload", response_model=DataUploadResponse)
 async def upload_data(file: UploadFile = File(...)):
     import pandas as pd
+    import uuid
     try:
         content = await file.read()
         name = file.filename.rsplit(".", 1)[0]
+        context_id = str(uuid.uuid4())
 
         if file.filename.endswith(".csv"):
             import io
@@ -85,11 +91,16 @@ async def upload_data(file: UploadFile = File(...)):
         else:
             raise HTTPException(status_code=400, detail="Unsupported file format")
 
+        context = DataContext()
+        context.add_dataframe(name, df, auto_profile=True)
+        _context_store[context_id] = context
+
         return DataUploadResponse(
             status="success",
             name=name,
             rows=len(df),
             columns=len(df.columns),
+            context_id=context_id,
         )
     except HTTPException:
         raise
