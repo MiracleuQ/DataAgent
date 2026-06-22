@@ -10,7 +10,7 @@ from app.tools.analysis_tools import get_analysis_tools
 from app.tools.registry import ToolRegistry
 from app.utils.language import get_prompt
 
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class ReporterAgent(BaseAgent):

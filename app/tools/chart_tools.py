@@ -15,6 +15,8 @@ for font in CHINESE_FONTS:
 plt.rcParams["axes.unicode_minus"] = False
 
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
+plt.rcParams["font.sans-serif"] = [plt.rcParams.get("font.sans-serif", ["SimHei"])[0]]
+plt.rcParams["axes.unicode_minus"] = False
 
 COLOR_PALETTE = sns.color_palette("muted")
 BAR_COLORS = sns.color_palette("viridis", n_colors=12)
