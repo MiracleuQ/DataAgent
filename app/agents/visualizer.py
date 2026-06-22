@@ -106,16 +106,22 @@ class VisualizerAgent(BaseAgent):
 3. 使用 create_smart_chart 工具创建图表
 
 图表类型选择指南：
-- bar: 适合分类数据对比
-- line: 适合时间序列或趋势分析
-- scatter: 适合展示两个变量的关系
+- bar: 适合分类数据对比，展示各类别的数值大小
+- line: 适合时间序列或趋势分析，展示数据变化趋势
+- scatter: 适合展示两个变量的关系和相关性
 - pie: 适合展示占比关系（类别不超过7个）
-- heatmap: 适合展示相关性矩阵
-- box: 适合展示数据分布和异常值
-- histogram: 适合展示数据分布
-- treemap: 适合展示层级结构
+- heatmap: 适合展示相关性矩阵，发现变量间的关联
+- box: 适合展示数据分布、中位数、四分位数和异常值
+- histogram: 适合展示数据的频率分布
+- treemap: 适合展示层级结构和占比
 
-请生成至少2-3个不同类型的图表来全面展示数据。每个图表都要有清晰的标题和标签。"""
+要求：
+1. 生成至少4-5个不同类型的图表
+2. 从多个维度分析数据：总体趋势、分类对比、相关性、分布、占比等
+3. 每个图表都要有清晰的中文标题和标签
+4. 优先使用 bar 和 line 展示趋势和对比
+5. 使用 scatter 或 heatmap 展示变量关系
+6. 使用 pie 或 treemap 展示占比关系"""
         messages = self._build_messages(full_task)
         openai_tools = self.tools.to_openai_tools()
         execute_tool = self._make_execute_tool(context)
