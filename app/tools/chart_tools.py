@@ -7,7 +7,10 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import seaborn as sns
 
-# Configure Chinese font
+# Modern styling
+sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
+
+# Re-apply Chinese font AFTER set_theme (it resets rcParams)
 CHINESE_FONTS = ["Microsoft YaHei", "Noto Sans SC", "SimHei", "DengXian", "KaiTi"]
 for font in CHINESE_FONTS:
     if any(font.lower() in f.name.lower() for f in fm.fontManager.ttflist):
@@ -15,8 +18,6 @@ for font in CHINESE_FONTS:
         break
 plt.rcParams["axes.unicode_minus"] = False
 
-# Modern styling
-sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 plt.rcParams.update({
     "figure.facecolor": "white",
     "axes.facecolor": "white",
