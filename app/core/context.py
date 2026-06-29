@@ -1,4 +1,5 @@
 import threading
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
@@ -8,6 +9,8 @@ from app.utils.logger import setup_logger
 from app.utils.serialization import json_safe_value
 
 logger = setup_logger(__name__)
+
+_MAX_PROFILE_CACHE_SIZE = 64
 
 
 class DataContext:
@@ -34,6 +37,7 @@ class DataContext:
         self.artifacts: List[Artifact] = []
         self.metadata: Dict[str, Any] = {}
         self._profile_cache: Dict[str, Dict[str, Any]] = {}
+        self._profile_cache_order: List[str] = []
         self._summary_cache: Optional[str] = None
         logger.info("DataContext initialized")
 
@@ -144,7 +148,15 @@ class DataContext:
             "sample_rows": sample_rows,
             "_fingerprint": fingerprint,
         }
-        self._profile_cache[name] = result
+
+        with self._lock:
+            if name not in self._profile_cache:
+                self._profile_cache_order.append(name)
+                if len(self._profile_cache_order) > _MAX_PROFILE_CACHE_SIZE:
+                    oldest = self._profile_cache_order.pop(0)
+                    self._profile_cache.pop(oldest, None)
+            self._profile_cache[name] = result
+
         return result
 
     def summary(self) -> str:

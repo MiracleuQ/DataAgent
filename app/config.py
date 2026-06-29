@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.utils.logger import setup_logger
@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     chart_output_dir: str = "data/charts"
     sandbox_timeout_sec: int = 30
 
+    allow_cors_origins: List[str] = Field(default_factory=list)
+
     @field_validator("llm_api_key")
     @classmethod
     def validate_llm_api_key(cls, v: str) -> str:
@@ -45,6 +47,17 @@ class Settings(BaseSettings):
         if v < 5:
             logger.warning("sandbox_timeout_sec is very low")
         return v
+
+    @field_validator("allow_cors_origins", mode="before")
+    @classmethod
+    def parse_allow_cors_origins(cls, value):
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            if value.strip() == "*":
+                return ["*"]
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return []
 
     def validate_startup(self) -> List[str]:
         warnings = []
