@@ -73,6 +73,7 @@ class DataContext:
     def add_result(self, key: str, value: Any) -> None:
         with self._lock:
             self.analysis_results[key] = value
+            self._summary_cache = None
         logger.info(f"Analysis result added: {key}")
 
     def get_result(self, key: str) -> Any:
@@ -85,11 +86,13 @@ class DataContext:
     def add_chart(self, path: str) -> None:
         with self._lock:
             self.charts.append(path)
+            self._summary_cache = None
         logger.info(f"Chart added: {path}")
 
     def add_artifact(self, artifact: Artifact) -> Artifact:
         with self._lock:
             self.artifacts.append(artifact)
+            self._summary_cache = None
         logger.info(f"Artifact added: {artifact.kind} - {artifact.title}")
         return artifact
 

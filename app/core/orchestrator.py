@@ -30,10 +30,17 @@ class Orchestrator:
     def register_agent(self, agent: BaseAgent) -> None:
         self._agents[agent.role] = agent
 
-    async def execute_plan(self, plan: Dict, context: DataContext) -> Dict[str, AgentResult]:
+    async def execute_plan(
+        self,
+        plan: Dict,
+        context: DataContext,
+        execution_events: Optional[List[Dict]] = None,
+    ) -> Dict[str, AgentResult]:
         tasks = plan.get("tasks", [])
         results: Dict[str, AgentResult] = {}
-        self._execution_events = []
+        events = execution_events if execution_events is not None else []
+        if execution_events is None:
+            self._execution_events = events
         completed: set = set()
         max_iterations = len(tasks) * 2
         iteration = 0
@@ -56,7 +63,7 @@ class Orchestrator:
                         error=f"Invalid dependencies: {invalid_deps}",
                     )
                     results[f"{agent_name}_{idx}"] = result
-                    self._record_event(idx, agent_name, "failed", result.error, duration_ms=0)
+                    self._record_event(events, idx, agent_name, "failed", result.error, duration_ms=0)
                     completed.add(idx)
                     continue
 
@@ -75,7 +82,7 @@ class Orchestrator:
                             error=f"Skipped because dependency task(s) failed: {failed_deps}",
                         )
                         results[f"{agent_name}_{idx}"] = result
-                        self._record_event(idx, agent_name, "skipped", result.error, duration_ms=0)
+                        self._record_event(events, idx, agent_name, "skipped", result.error, duration_ms=0)
                         completed.add(idx)
                         continue
 
@@ -85,7 +92,10 @@ class Orchestrator:
                 break
 
             batch_results = await asyncio.gather(
-                *[self._execute_task(idx, task_def, tasks, results, context) for idx, task_def in ready]
+                *[
+                    self._execute_task(idx, task_def, tasks, results, context, events)
+                    for idx, task_def in ready
+                ]
             )
             for idx, agent_name, result in batch_results:
                 results[f"{agent_name}_{idx}"] = result
@@ -101,7 +111,7 @@ class Orchestrator:
                     error="Skipped because dependencies could not be resolved",
                 )
                 results[f"{agent_name}_{idx}"] = result
-                self._record_event(idx, agent_name, "skipped", result.error, duration_ms=0)
+                self._record_event(events, idx, agent_name, "skipped", result.error, duration_ms=0)
 
         return results
 
@@ -112,6 +122,7 @@ class Orchestrator:
         tasks: List[Dict],
         existing_results: Dict[str, AgentResult],
         context: DataContext,
+        execution_events: List[Dict],
     ) -> Tuple[int, str, AgentResult]:
         agent_name = task_def["agent"]
         task_desc = task_def["task"]
@@ -123,7 +134,7 @@ class Orchestrator:
                 agent_id=agent_name,
                 error=f"Agent '{agent_name}' not registered",
             )
-            self._record_event(idx, agent_name, "failed", result.error, duration_ms=0)
+            self._record_event(execution_events, idx, agent_name, "failed", result.error, duration_ms=0)
             return idx, agent_name, result
 
         dep_context = ""
@@ -135,10 +146,17 @@ class Orchestrator:
                 dep_context += f"\nDependency '{dep_agent}' completed successfully."
 
         full_task = f"{task_desc}{dep_context}"
-        self._record_event(idx, agent_name, "running", "", duration_ms=0)
+        self._record_event(execution_events, idx, agent_name, "running", "", duration_ms=0)
         result = await agent.run_with_timeout(full_task, context)
         status = "success" if result.success else "failed"
-        self._record_event(idx, agent_name, status, result.error or "", duration_ms=result.duration_ms)
+        self._record_event(
+            execution_events,
+            idx,
+            agent_name,
+            status,
+            result.error or "",
+            duration_ms=result.duration_ms,
+        )
         await self._bus.send(
             Message(
                 sender=agent_name,
@@ -149,8 +167,16 @@ class Orchestrator:
         )
         return idx, agent_name, result
 
-    def _record_event(self, task_index: int, agent: str, status: str, message: str, duration_ms: float) -> None:
-        self._execution_events.append(
+    def _record_event(
+        self,
+        execution_events: List[Dict],
+        task_index: int,
+        agent: str,
+        status: str,
+        message: str,
+        duration_ms: float,
+    ) -> None:
+        execution_events.append(
             {
                 "task_index": task_index,
                 "agent": agent,
@@ -161,7 +187,12 @@ class Orchestrator:
             }
         )
 
-    def _execution_summary(self, results: Dict[str, AgentResult], duration_ms: float) -> Dict:
+    def _execution_summary(
+        self,
+        results: Dict[str, AgentResult],
+        duration_ms: float,
+        execution_events: List[Dict],
+    ) -> Dict:
         succeeded = sum(1 for result in results.values() if result.success)
         failed = sum(1 for result in results.values() if not result.success)
         return {
@@ -169,7 +200,7 @@ class Orchestrator:
             "succeeded": succeeded,
             "failed": failed,
             "duration_ms": round(duration_ms, 2),
-            "events": self.execution_events,
+            "events": list(execution_events),
         }
 
     async def run(self, user_request: str, context: DataContext, coordinator: "BaseAgent") -> Dict:
@@ -180,9 +211,10 @@ class Orchestrator:
         session_id = str(uuid.uuid4())
         self._history.create_session(session_id, user_request)
         run_started = time.perf_counter()
+        execution_events: List[Dict] = []
         try:
             plan_result = await coordinator.plan(user_request)
-            results = await self.execute_plan(plan_result, context)
+            results = await self.execute_plan(plan_result, context, execution_events=execution_events)
             final_report = context.get_result("final_report") or ""
             reviewer = self._agents.get("reviewer")
             if final_report and reviewer:
@@ -218,7 +250,11 @@ class Orchestrator:
                 "report": final_report,
                 "review": context.get_result("review_report") or "",
                 "artifacts": [artifact.to_dict() for artifact in context.artifacts],
-                "execution": self._execution_summary(results, (time.perf_counter() - run_started) * 1000),
+                "execution": self._execution_summary(
+                    results,
+                    (time.perf_counter() - run_started) * 1000,
+                    execution_events,
+                ),
                 "charts": context.charts,
                 "dataframes": context.list_dataframes(),
             }

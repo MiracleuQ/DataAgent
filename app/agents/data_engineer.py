@@ -7,7 +7,7 @@ from app.agents.tool_loop import run_tool_call_loop
 from app.core.bus import MessageBus
 from app.core.context import DataContext
 from app.llm.client import LLMClient
-from app.tools.data_tools import get_data_tools
+from app.tools.data_tools import _resolve_allowed_path, get_data_tools
 from app.tools.registry import ToolRegistry
 from app.utils.language import get_prompt
 
@@ -29,6 +29,39 @@ def _list_data_files() -> str:
     return "Available data files: " + ", ".join(sorted(files))
 
 
+def _context_data_hint(context: DataContext) -> str:
+    names = context.list_dataframes()
+    if not names:
+        return "No uploaded datasets are currently loaded in DataContext."
+
+    lines = [
+        "Uploaded datasets are already loaded in DataContext.",
+        "Use these in-memory datasets directly; do not invent generic files such as data.csv.",
+    ]
+    for name in names:
+        profile = context.data_profile(name)
+        columns = ", ".join(profile["columns"].keys())
+        lines.append(
+            f"- {name}: {profile['shape']['rows']} rows, "
+            f"{profile['shape']['columns']} columns; columns: {columns}"
+        )
+    return "\n".join(lines)
+
+
+def _existing_context_response(context: DataContext, requested_path: str) -> Dict[str, Any]:
+    return {
+        "status": "using_existing_context",
+        "message": (
+            f"Requested file '{requested_path}' was not found, but uploaded data is already loaded "
+            "in DataContext. Continue with the available in-memory datasets instead."
+        ),
+        "available_dataframes": [
+            context.data_profile(name)
+            for name in context.list_dataframes()
+        ],
+    }
+
+
 class DataEngineerAgent(BaseAgent):
     def __init__(self, llm_client: LLMClient, bus: Optional[MessageBus] = None):
         registry = ToolRegistry()
@@ -46,6 +79,16 @@ class DataEngineerAgent(BaseAgent):
                 context.add_dataframe(df_name, cleaned)
                 return context.data_profile(df_name)
 
+            if func_name == "read_file":
+                requested_path = str(args.get("path", "")).strip()
+                if context.list_dataframes():
+                    try:
+                        resolved_path = _resolve_allowed_path(requested_path)
+                    except (OSError, PermissionError, ValueError):
+                        return _existing_context_response(context, requested_path)
+                    if not resolved_path.exists():
+                        return _existing_context_response(context, requested_path)
+
             result = self.tools.call(func_name, **args)
             if hasattr(result, "to_csv"):
                 name = args.get("path", "data").split("/")[-1].split(".")[0]
@@ -57,7 +100,11 @@ class DataEngineerAgent(BaseAgent):
 
     async def run(self, task: str, context: DataContext) -> AgentResult:
         file_hint = _list_data_files()
-        augmented_task = f"{task}\n\n[Data directory contents]\n{file_hint}"
+        context_hint = _context_data_hint(context)
+        augmented_task = (
+            f"{task}\n\n[Current uploaded datasets]\n{context_hint}"
+            f"\n\n[Data directory contents]\n{file_hint}"
+        )
         messages = self._build_messages(augmented_task)
         openai_tools = self.tools.to_openai_tools()
         execute_tool = self._make_execute_tool(context)

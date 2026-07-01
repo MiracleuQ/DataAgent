@@ -1,4 +1,5 @@
 import pandas as pd
+from app.core.artifacts import Artifact
 from app.core.context import DataContext
 
 
@@ -28,3 +29,18 @@ def test_add_chart():
     ctx = DataContext()
     ctx.add_chart("/tmp/chart.png")
     assert len(ctx.charts) == 1
+
+
+def test_summary_cache_is_invalidated_by_context_outputs():
+    ctx = DataContext()
+
+    assert ctx.summary() == "Empty context"
+
+    ctx.add_result("answer", {"value": 42})
+    assert "Analysis result: answer" in ctx.summary()
+
+    ctx.add_chart("/tmp/chart.png")
+    assert "Charts: 1 generated" in ctx.summary()
+
+    ctx.add_artifact(Artifact(kind="note", title="Finding", summary="Important"))
+    assert "Artifacts: 1 available" in ctx.summary()

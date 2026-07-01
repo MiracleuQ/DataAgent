@@ -37,6 +37,28 @@ class ToolLoopLLM:
         return SimpleNamespace(content="Final insight from tool result", tool_calls=None)
 
 
+class EchoReadFileLLM:
+    def __init__(self):
+        self.calls = []
+
+    async def chat(self, messages, temperature=0.2, model=None, tools=None):
+        self.calls.append({"messages": messages, "tools": tools})
+        if len(self.calls) == 1:
+            return SimpleNamespace(
+                content=None,
+                tool_calls=[
+                    SimpleNamespace(
+                        id="call_1",
+                        type="function",
+                        function=SimpleNamespace(name="read_file", arguments='{"path": "data.csv"}'),
+                    )
+                ],
+            )
+
+        tool_message = next(message for message in messages if message.get("role") == "tool")
+        return SimpleNamespace(content=tool_message["content"], tool_calls=None)
+
+
 def test_coordinator_falls_back_when_plan_uses_unknown_agent():
     coordinator = CoordinatorAgent(llm_client=StaticLLM())
 
@@ -118,3 +140,19 @@ async def test_data_engineer_sends_tool_results_back_to_llm_for_final_summary():
     assert result.output == "Final insight from tool result"
     assert len(llm.calls) == 2
     assert context.get_dataframe("sales")["amount"].isna().sum() == 0
+
+
+@pytest.mark.asyncio
+async def test_data_engineer_uses_uploaded_context_when_llm_guesses_data_csv():
+    llm = EchoReadFileLLM()
+    agent = DataEngineerAgent(llm_client=llm)
+    context = DataContext()
+    context.add_dataframe("uploaded_sales", pd.DataFrame({"amount": [1, 2, 3]}))
+
+    result = await agent.run("analyze the uploaded file", context)
+
+    assert result.success is True
+    assert "data.csv" in result.output
+    assert "No such file or directory" not in result.output
+    assert "uploaded_sales" in result.output
+    assert "already loaded" in result.output

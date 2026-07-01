@@ -34,15 +34,11 @@ class DataUploadResponse(BaseModel):
     context_id: str
 
 
-_system_cache = None
 _context_store: Dict[str, DataContext] = {}
 
 
 def get_system():
-    global _system_cache
-    if _system_cache is None:
-        _system_cache = create_system()
-    return _system_cache
+    return create_system()
 
 
 @router.post("/analyze", response_model=AnalysisResponse)

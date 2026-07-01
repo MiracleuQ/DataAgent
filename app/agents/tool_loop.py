@@ -3,9 +3,24 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Tuple
 
-_STRIP_XML_RE = re.compile(r"<\s*/?\s*function_?calls\s*>", re.IGNORECASE)
+_DSML_TAG_RE = re.compile(
+    r"<\s*(/?)\s*[|｜]{2}\s*DSML\s*[|｜]{2}\s*(tool_calls|function_calls|invoke|parameter)([^>]*)>",
+    re.IGNORECASE,
+)
+_STRIP_XML_RE = re.compile(r"<\s*/?\s*(?:function_?calls|tool_calls)\s*>", re.IGNORECASE)
 _STRIP_XML_RE2 = re.compile(r"<\s*invoke\s[^>]*>.*?</\s*invoke\s*>", re.DOTALL | re.IGNORECASE)
 _STRIP_XML_RE3 = re.compile(r"<\s*parameter\s[^>]*>.*?</\s*parameter\s*>", re.DOTALL | re.IGNORECASE)
+
+
+def _normalize_tool_markup(text: str) -> str:
+    if not text:
+        return ""
+
+    def replace_tag(match: re.Match) -> str:
+        closing, tag_name, attributes = match.groups()
+        return f"<{closing}{tag_name}{attributes}>"
+
+    return _DSML_TAG_RE.sub(replace_tag, text)
 
 
 def _tool_call_name(tool_call: Any) -> str:
@@ -48,6 +63,7 @@ def _execute_single_tool(tool_call: Any, execute_tool: Callable[[str, Dict[str, 
 def _clean_content(text: str) -> str:
     if not text:
         return ""
+    text = _normalize_tool_markup(text)
     text = _STRIP_XML_RE.sub("", text)
     text = _STRIP_XML_RE2.sub("", text)
     text = _STRIP_XML_RE3.sub("", text)
@@ -59,7 +75,7 @@ _INVOKE_BLOCK_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 _PARAM_RE = re.compile(
-    r"<\s*parameter\s+name\s*=\s*[\"'](\w+)[\"'](?:[^>]*?)>\s*(.*?)\s*<\s*/\s*parameter\s*>",
+    r"<\s*parameter\s+name\s*=\s*[\"'](\w+)[\"'](?P<attrs>[^>]*)>\s*(.*?)\s*<\s*/\s*parameter\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -85,15 +101,31 @@ class _FakeFunction:
         self.arguments = json.dumps(arguments, ensure_ascii=False)
 
 
+def _parse_parameter_value(attributes: str, raw_value: str) -> Any:
+    value = raw_value.strip()
+    if re.search(r"\bstring\s*=\s*[\"']true[\"']", attributes, re.IGNORECASE):
+        return value
+    if re.search(r"\bstring\s*=\s*[\"']false[\"']", attributes, re.IGNORECASE):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _parse_content_tool_calls(content: str) -> List[_FakeToolCall]:
     """Extract DeepSeek-style XML function calls from content text."""
+    content = _normalize_tool_markup(content)
     tool_calls = []
     for idx, match in enumerate(_INVOKE_BLOCK_RE.finditer(content)):
         func_name = match.group(1)
         params_block = match.group(2)
         args = {}
         for pm in _PARAM_RE.finditer(params_block):
-            args[pm.group(1)] = pm.group(2).strip()
+            args[pm.group(1)] = _parse_parameter_value(pm.group("attrs"), pm.group(3))
         tool_calls.append(_FakeToolCall(func_name, args, f"content_call_{idx}"))
     return tool_calls
 
@@ -120,7 +152,7 @@ async def run_tool_call_loop(
     follow_up_messages.append(
         {
             "role": "assistant",
-            "content": response.content or "",
+            "content": _clean_content(response.content or ""),
             "tool_calls": [_serialize_tool_call(tool_call) for tool_call in tool_calls],
         }
     )
